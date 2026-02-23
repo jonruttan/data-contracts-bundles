@@ -15,7 +15,7 @@ domains:
           - specs/contract/04_harness.md
           - specs/contract/28_spec_lang_policy_execution.md
           - specs/schema/schema_v1.md
-          - specs/schema/schema_v2.md
+          - specs/schema/schema_v1.md
           - specs/schema/schema_catalog_v1.yaml
           - specs/schema/schema_catalog_v2.yaml
         artifacts:
@@ -26,6 +26,6 @@ domains:
           - path: /.artifacts/governance-summary.json
             kind: report
         contracts:
-          - /specs/contract/02_case_shape.md
-          - /specs/contract/04_harness.md
-          - /specs/contract/28_spec_lang_policy_execution.md
+          - /specs/02_contracts/02_case_shape.md
+          - /specs/02_contracts/04_harness.md
+          - /specs/02_contracts/28_spec_lang_policy_execution.md

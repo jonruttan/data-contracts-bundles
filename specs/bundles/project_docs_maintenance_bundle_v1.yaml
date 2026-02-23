@@ -21,5 +21,5 @@ domains:
           - path: /.artifacts/governance-optional-summary.md
             kind: report
         contracts:
-          - /specs/contract/10_docs_quality.md
-          - /specs/contract/22_docs_information_architecture.md
+          - /specs/02_contracts/10_docs_quality.md
+          - /specs/02_contracts/22_docs_information_architecture.md

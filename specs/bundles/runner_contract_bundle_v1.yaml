@@ -34,12 +34,12 @@ domains:
           - path: /.artifacts/runner-status-ingest-log.json
             kind: report
         contracts:
-          - /specs/contract/12_runner_interface.md
-          - /specs/contract/25_compatibility_matrix.md
-          - /specs/contract/27_runner_status_exchange.md
-          - /specs/contract/29_runner_cli_interface.md
-          - /specs/contract/30_build_tool_command_set.md
-          - /specs/contract/33_bundle_package_management.md
+          - /specs/02_contracts/12_runner_interface.md
+          - /specs/02_contracts/25_compatibility_matrix.md
+          - /specs/02_contracts/27_runner_status_exchange.md
+          - /specs/02_contracts/29_runner_cli_interface.md
+          - /specs/02_contracts/30_build_tool_command_set.md
+          - /specs/02_contracts/33_bundle_package_management.md
 applies_to_runners:
   - python
   - php
