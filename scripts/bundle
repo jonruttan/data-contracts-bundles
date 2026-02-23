@@ -269,6 +269,15 @@ resolve_impl() {
   manifest_hash="$(sha256_file "$manifest_path")"
   file_count="$(wc -l < "$merged_paths_file" | tr -d ' ')"
 
+  local declaration_input="${tmp_dir}/declaration_digest_input.txt"
+  : > "$declaration_input"
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    printf '%s\n%s\n' "$rel" "$(sha256_file "${out_dir}/${rel}")" >> "$declaration_input"
+  done < "$merged_paths_file"
+  local declaration_sha256
+  declaration_sha256="$(sha256_file "$declaration_input")"
+
   local manifests_index="${tmp_dir}/selected_manifests.sha256"
   : > "$manifests_index"
   while IFS= read -r id; do
@@ -301,6 +310,12 @@ resolve_impl() {
     echo "  file_count: ${file_count}"
     echo "  sha256_manifest: ${manifest_hash}"
     echo "  sha256_manifests: ${manifests_hash}"
+    echo "  declaration_sha256: ${declaration_sha256}"
+    echo "  declaration_paths:"
+    while IFS= read -r rel; do
+      [[ -z "$rel" ]] && continue
+      echo "    - ${rel}"
+    done < "$merged_paths_file"
   } > "$lock_path"
 
   rm -rf "$tmp_dir"

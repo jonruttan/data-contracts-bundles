@@ -7,6 +7,9 @@ Canonical librarian repository for Data Contracts bundle manifests and bundle pa
 This repository is the canonical source for:
 - bundle manifests under `specs/bundles/`
 - bundle package publishing metadata and workflows
+- canonical scaffold bundles:
+  - `data-contracts-lang-project-scaffold`
+  - `data-contracts-lang-rust-project-scaffold`
 
 Bundle package asset naming is canonical:
 - `data-contract-bundle-<bundle_id>-v<bundle_version>.tar.gz`

@@ -1,0 +1,52 @@
+version: 1
+bundle_id: data-contracts-lang-project-scaffold
+bundle_version: 1.0.0
+source_commit: local
+payload:
+  files_root: payloads/data-contracts-lang-project-scaffold/scaffold/files
+  templates_root: payloads/data-contracts-lang-project-scaffold/scaffold/templates
+include:
+  paths:
+    - specs/**
+    - docs/**
+    - .github/**
+    - scripts/**
+    - README.md
+    - LICENSE
+exclude:
+  paths:
+    - .artifacts/**
+    - target/**
+    - .venv/**
+    - vendor/**
+variables:
+  - name: project_name
+    type: string
+    default: data-contracts-lang
+  - name: org_name
+    type: string
+    default: jonruttan
+materialization:
+  entries:
+    - target_path: README.md
+      source:
+        kind: file
+        path: payloads/data-contracts-lang-project-scaffold/scaffold/files/README.md
+      mode: overwrite
+      required: true
+    - target_path: specs/index.md
+      source:
+        kind: template
+        path: payloads/data-contracts-lang-project-scaffold/scaffold/templates/specs_index.md.tmpl
+      mode: create_only
+      required: true
+    - target_path: specs/02_contracts/spec_lang_authority_v1.md
+      source:
+        kind: file
+        path: payloads/data-contracts-lang-project-scaffold/scaffold/files/spec_lang_authority_v1.md
+      mode: create_only
+      required: true
+post_write_checks:
+  - id: check-readme
+    kind: exists
+    path: README.md

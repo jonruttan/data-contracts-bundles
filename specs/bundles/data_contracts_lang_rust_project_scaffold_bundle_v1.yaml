@@ -1,0 +1,27 @@
+bundle_id: data-contracts-lang-rust-project-scaffold
+bundle_version: 1.0.0
+summary: Rust toolchain overlay scaffold for data-contracts-lang with TDD-first defaults.
+maintainers:
+  - name: data-contracts maintainers
+dependency_mode: required
+depends_on:
+  - data-contracts-lang-project-scaffold
+domains:
+  - id: scaffold
+    modules:
+      - id: data_contracts_lang_rust_project_scaffold
+        include_paths:
+          - payloads/data-contracts-lang-rust-project-scaffold/scaffold/**
+        contracts:
+          - /specs/02_contracts/29_runner_cli_interface.md
+          - /specs/02_contracts/33_bundle_package_management.md
+          - /specs/02_contracts/34_runner_implementation_spec_bundles.md
+        artifacts:
+          - path: scaffold/scaffold_manifest_v1.yaml
+            kind: manifest
+          - path: scaffold/files
+            kind: dir
+          - path: scaffold/templates
+            kind: dir
+applies_to_runners:
+  - rust

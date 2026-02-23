@@ -1,0 +1,45 @@
+version: 1
+bundle_id: data-contracts-lang-rust-project-scaffold
+bundle_version: 1.0.0
+source_commit: local
+payload:
+  files_root: payloads/data-contracts-lang-rust-project-scaffold/scaffold/files
+  templates_root: payloads/data-contracts-lang-rust-project-scaffold/scaffold/templates
+include:
+  paths:
+    - Cargo.toml
+    - src/**
+    - tests/**
+    - .github/workflows/**
+exclude:
+  paths:
+    - target/**
+    - .artifacts/**
+variables:
+  - name: crate_name
+    type: string
+    default: data_contracts_lang
+materialization:
+  entries:
+    - target_path: Cargo.toml
+      source:
+        kind: template
+        path: payloads/data-contracts-lang-rust-project-scaffold/scaffold/templates/Cargo.toml.tmpl
+      mode: create_only
+      required: true
+    - target_path: src/lib.rs
+      source:
+        kind: file
+        path: payloads/data-contracts-lang-rust-project-scaffold/scaffold/files/src_lib.rs
+      mode: create_only
+      required: true
+    - target_path: tests/spec_lang_tdd.rs
+      source:
+        kind: file
+        path: payloads/data-contracts-lang-rust-project-scaffold/scaffold/files/tests_spec_lang_tdd.rs
+      mode: create_only
+      required: true
+post_write_checks:
+  - id: check-cargo
+    kind: exists
+    path: Cargo.toml
