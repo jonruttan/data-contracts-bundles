@@ -10,6 +10,9 @@ This repository is the canonical source for:
 - canonical scaffold bundles:
   - `data-contracts-lang-project-scaffold`
   - `data-contracts-lang-rust-project-scaffold`
+- canonical shared library bundles:
+  - `data-contracts-library-core`
+  - `data-contracts-library-runner-overlays`
 
 Bundle package asset naming is canonical:
 - `data-contract-bundle-<bundle_id>-v<bundle_version>.tar.gz`
