@@ -1,0 +1,25 @@
+bundle_id: data-contracts-runner-core
+bundle_version: 1.0.0
+summary: Canonical shared core surfaces for data-contracts-runner.
+maintainers:
+  - name: data-contracts maintainers
+dependency_mode: required
+depends_on: []
+domains:
+  - id: runner_core
+    modules:
+      - id: data_contracts_runner_core
+        contracts:
+          - specs/contracts/bundle_declarations/data_contracts_runner_core_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
+        artifacts:
+          - path: payloads/data-contracts-runner/core/specs/00_core
+            kind: dir
+applies_to_runners:
+  - rust
+  - python
+  - php

@@ -1,0 +1,26 @@
+bundle_id: data-contracts-runner-contract-sets-shared
+bundle_version: 1.0.0
+summary: Canonical shared runner contract-set surfaces.
+maintainers:
+  - name: data-contracts maintainers
+dependency_mode: required
+depends_on:
+  - data-contracts-runner-core
+domains:
+  - id: shared_contract_sets
+    modules:
+      - id: data_contracts_runner_contract_sets_shared
+        contracts:
+          - specs/contracts/bundle_declarations/data_contracts_runner_contract_sets_shared_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
+        artifacts:
+          - path: payloads/data-contracts-runner/contract_sets_shared/specs/07_runner_behavior/contract_sets/shared
+            kind: dir
+applies_to_runners:
+  - rust
+  - python
+  - php

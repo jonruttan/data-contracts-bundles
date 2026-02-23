@@ -1,6 +1,6 @@
 assets:
   - id: asset.bundle.runner_contract
-    ref: payloads/data-contracts-library/runner_behavior
+    ref: payloads/data-contracts-runner/shared_behavior
     type: dir
 artifacts:
   - id: artifact.bundle.runner_contract.reports

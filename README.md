@@ -7,7 +7,9 @@ bundle release assets.
 
 - `data-contracts-library-core`
 - `data-contracts-library-overlays`
-- `data-contracts-library-runner-behavior`
+- `data-contracts-runner-core`
+- `data-contracts-runner-shared-behavior`
+- `data-contracts-runner-contract-sets-shared`
 - `data-contracts-library-bundle-tooling`
 
 Release asset naming:

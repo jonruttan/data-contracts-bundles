@@ -1,0 +1,28 @@
+bundle_id: data-contracts-runner-shared-behavior
+bundle_version: 1.0.0
+summary: Canonical shared runner behavior docs and shared impl surfaces.
+maintainers:
+  - name: data-contracts maintainers
+dependency_mode: required
+depends_on:
+  - data-contracts-runner-core
+domains:
+  - id: shared_behavior
+    modules:
+      - id: data_contracts_runner_shared_behavior
+        contracts:
+          - specs/contracts/bundle_declarations/data_contracts_runner_shared_behavior_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
+        artifacts:
+          - path: payloads/data-contracts-runner/shared_behavior/specs/07_runner_behavior/runner
+            kind: dir
+          - path: payloads/data-contracts-runner/shared_behavior/specs/07_runner_behavior/impl/shared
+            kind: dir
+applies_to_runners:
+  - rust
+  - python
+  - php
