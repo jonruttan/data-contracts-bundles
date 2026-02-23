@@ -1,0 +1,28 @@
+bundle_id: data-contracts-library-bundle-tooling
+bundle_version: 1.0.0
+summary: Canonical reusable bundle/bootstrap tooling spec contracts and fixtures.
+maintainers:
+  - name: data-contracts maintainers
+dependency_mode: required
+depends_on:
+  - data-contracts-library-core
+domains:
+  - id: bundle_tooling
+    modules:
+      - id: data_contracts_library_bundle_tooling
+        include_paths:
+          - payloads/data-contracts-library/bundle_tooling/**
+        contracts:
+          - /specs/02_contracts/33_bundle_package_management.md
+          - /specs/02_contracts/34_runner_implementation_spec_bundles.md
+        artifacts:
+          - path: payloads/data-contracts-library/bundle_tooling/specs/01_schema
+            kind: dir
+          - path: payloads/data-contracts-library/bundle_tooling/specs/02_contracts
+            kind: dir
+          - path: payloads/data-contracts-library/bundle_tooling/specs/05_libraries/bundle_tooling
+            kind: dir
+applies_to_runners:
+  - rust
+  - python
+  - php

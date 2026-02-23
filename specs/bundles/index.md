@@ -10,4 +10,6 @@ Canonical bundle manifests for release-asset package generation.
 - `/specs/bundles/data_contracts_lang_project_scaffold_bundle_v1.yaml`
 - `/specs/bundles/data_contracts_lang_rust_project_scaffold_bundle_v1.yaml`
 - `/specs/bundles/data_contracts_library_core_bundle_v1.yaml`
-- `/specs/bundles/data_contracts_library_runner_overlays_bundle_v1.yaml`
+- `/specs/bundles/data_contracts_library_overlays_bundle_v1.yaml`
+- `/specs/bundles/data_contracts_library_runner_behavior_bundle_v1.yaml`
+- `/specs/bundles/data_contracts_library_bundle_tooling_bundle_v1.yaml`

@@ -1,4 +1,4 @@
-bundle_id: data-contracts-library-runner-overlays
+bundle_id: data-contracts-library-overlays
 bundle_version: 1.0.0
 summary: Canonical runner overlay bundle for rust/python/php implementation overlays.
 maintainers:
@@ -9,7 +9,7 @@ depends_on:
 domains:
   - id: overlays
     modules:
-      - id: data_contracts_library_runner_overlays
+      - id: data_contracts_library_overlays
         include_paths:
           - payloads/data-contracts-library/overlays/**
         contracts:

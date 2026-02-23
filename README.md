@@ -1,32 +1,17 @@
 # data-contracts-bundles
 
-Canonical librarian repository for Data Contracts bundle manifests and bundle package release assets.
+Canonical bundle-manifest and payload repository for data-contract ecosystem
+bundle release assets.
 
-## Purpose
+## Canonical Library Bundle IDs
 
-This repository is the canonical source for:
-- bundle manifests under `specs/bundles/`
-- bundle package publishing metadata and workflows
-- canonical scaffold bundles:
-  - `data-contracts-lang-project-scaffold`
-  - `data-contracts-lang-rust-project-scaffold`
-- canonical shared library bundles:
-  - `data-contracts-library-core`
-  - `data-contracts-library-runner-overlays`
+- `data-contracts-library-core`
+- `data-contracts-library-overlays`
+- `data-contracts-library-runner-behavior`
+- `data-contracts-library-bundle-tooling`
 
-Bundle package asset naming is canonical:
+Release asset naming:
+
 - `data-contract-bundle-<bundle_id>-v<bundle_version>.tar.gz`
 - `data-contract-bundle-<bundle_id>-v<bundle_version>.tar.gz.sha256`
 - `data-contract-bundle-<bundle_id>-v<bundle_version>.tar.gz.intoto.json`
-
-## CLI
-
-Producer operations are provided by:
-- `scripts/bundle resolve`
-- `scripts/bundle package`
-- `scripts/bundle package-check`
-
-## Schemas
-
-- `specs/schema/bundle_manifest_v1.yaml`
-- `specs/schema/resolved_bundle_lock_v1.yaml`
