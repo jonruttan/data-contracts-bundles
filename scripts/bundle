@@ -41,6 +41,33 @@ array_contains() {
   jq -e --arg v "$value" 'index($v) != null' <<<"$json_array" >/dev/null 2>&1
 }
 
+normalize_static_local_ref() {
+  local ref="$1"
+  local context="$2"
+  [[ -n "$ref" ]] || err "${context}: ref must be non-empty"
+  [[ "$ref" != http://* && "$ref" != https://* ]] || err "${context}: remote refs are not allowed (${ref})"
+  [[ "$ref" != *'${'* && "$ref" != *'{{'* ]] || err "${context}: unresolved template ref is not allowed (${ref})"
+  if [[ "$ref" =~ '(^|/)\.\.(/|$)' ]]; then
+    err "${context}: ref cannot escape repo root (${ref})"
+  fi
+
+  local rel="$ref"
+  rel="${rel#/}"
+  rel="${rel#./}"
+  rel="${rel%/}"
+  [[ -n "$rel" ]] || err "${context}: ref resolves to empty path (${ref})"
+  echo "$rel"
+}
+
+read_contract_declarations_json() {
+  local abs_path="$1"
+  local rel_path="$2"
+  local json
+  json="$(parse_yaml_file_to_json "$abs_path")" || err "failed parsing contract declaration: ${rel_path}"
+  jq -e 'type=="object"' <<<"$json" >/dev/null || err "contract declaration must parse as object: ${rel_path}"
+  echo "$json"
+}
+
 resolve_impl() {
   command -v jq >/dev/null 2>&1 || err "jq is required"
   command -v php >/dev/null 2>&1 || err "php is required"
@@ -66,9 +93,8 @@ resolve_impl() {
   typeset -A PATH_BY_ID
   typeset -A MODE_BY_ID
   typeset -A DEPENDS_JSON_BY_ID
-  typeset -A INCLUDE_JSON_BY_ID
-  typeset -A EXCLUDE_JSON_BY_ID
   typeset -A RUNNERS_JSON_BY_ID
+  typeset -A MANIFEST_JSON_BY_ID
 
   local manifest_paths_file="${tmp_dir}/manifest_paths.txt"
   find "${repo_root}/specs/bundles" -type f -name '*.yaml' | LC_ALL=C sort > "$manifest_paths_file"
@@ -79,7 +105,7 @@ resolve_impl() {
     local json
     json="$(parse_yaml_file_to_json "$abs_path")" || err "failed parsing manifest: $rel_path"
 
-    local id mode depends_json include_json exclude_json runners_json bundle_version
+    local id mode depends_json runners_json bundle_version
     id="$(jq -r '.bundle_id // empty' <<<"$json")"
     [[ -n "$id" ]] || err "manifest ${rel_path}: bundle_id must be non-empty string"
     [[ -z "${PATH_BY_ID[$id]-}" ]] || err "duplicate bundle_id '${id}' in ${PATH_BY_ID[$id]} and ${rel_path}"
@@ -93,11 +119,17 @@ resolve_impl() {
     depends_json="$(jq -c '.depends_on // []' <<<"$json")"
     jq -e 'type=="array" and all(.[]; type=="string" and length>0)' <<<"$depends_json" >/dev/null || err "manifest ${rel_path}: depends_on must be list of strings"
 
-    include_json="$(jq -c '[.domains[]?.modules[]?.include_paths[]?] // []' <<<"$json")"
-    jq -e 'type=="array" and length>0 and all(.[]; type=="string" and length>0)' <<<"$include_json" >/dev/null || err "manifest ${rel_path}: domains.modules.include_paths must produce a non-empty list"
-
-    exclude_json="$(jq -c '[.domains[]?.modules[]?.exclude_paths[]?] // []' <<<"$json")"
-    jq -e 'type=="array" and all(.[]; type=="string" and length>0)' <<<"$exclude_json" >/dev/null || err "manifest ${rel_path}: domains.modules.exclude_paths must be list of strings"
+    jq -e '.domains | type=="array" and length>0' <<<"$json" >/dev/null || err "manifest ${rel_path}: domains must be non-empty"
+    while IFS= read -r module; do
+      [[ -n "$module" ]] || continue
+      jq -e '.id | type=="string" and length>0' <<<"$module" >/dev/null || err "manifest ${rel_path}: modules[].id must be non-empty"
+      jq -e '.contracts | type=="array" and length>0 and all(.[]; type=="string" and length>0)' <<<"$module" >/dev/null || err "manifest ${rel_path}: modules[].contracts must be non-empty list[string]"
+      jq -e '.resource_kinds | type=="array" and length>0 and all(.[]; .=="asset")' <<<"$module" >/dev/null || err "manifest ${rel_path}: modules[].resource_kinds must be [asset]"
+      jq -e '.selection_policy.refs == "static_local_only" and .selection_policy.artifacts == "exclude_produced"' <<<"$module" >/dev/null || err "manifest ${rel_path}: modules[].selection_policy must enforce refs=static_local_only and artifacts=exclude_produced"
+      if jq -e 'has("include_paths") or has("exclude_paths")' <<<"$module" >/dev/null; then
+        err "manifest ${rel_path}: include_paths/exclude_paths are not supported in canonical bundle manifests"
+      fi
+    done < <(jq -c '.domains[]?.modules[]?' <<<"$json")
 
     runners_json="$(jq -c '.applies_to_runners // []' <<<"$json")"
     jq -e 'type=="array" and all(.[]; type=="string" and length>0)' <<<"$runners_json" >/dev/null || err "manifest ${rel_path}: applies_to_runners must be list of strings"
@@ -105,9 +137,8 @@ resolve_impl() {
     PATH_BY_ID[$id]="$rel_path"
     MODE_BY_ID[$id]="$mode"
     DEPENDS_JSON_BY_ID[$id]="$depends_json"
-    INCLUDE_JSON_BY_ID[$id]="$include_json"
-    EXCLUDE_JSON_BY_ID[$id]="$exclude_json"
     RUNNERS_JSON_BY_ID[$id]="$runners_json"
+    MANIFEST_JSON_BY_ID[$id]="$json"
   done < "$manifest_paths_file"
 
   [[ -n "${PATH_BY_ID[$root_bundle]-}" ]] || err "missing dependency/root bundle_id: $root_bundle"
@@ -202,33 +233,67 @@ resolve_impl() {
     echo "$id" >> "$selected_file"
   done < "$ordered_file"
 
-  local repo_files_file="${tmp_dir}/repo_files.txt"
-  find "$repo_root" -type f ! -path "*/.git/*" | sed "s#^${repo_root}/##" | LC_ALL=C sort > "$repo_files_file"
-
   typeset -A MERGED_SHA
   typeset -A INCLUDED_THIS
+  typeset -A PRODUCED_THIS
 
   while IFS= read -r id; do
     INCLUDED_THIS=()
-    while IFS= read -r pattern; do
-      [[ -z "$pattern" ]] && continue
-      local matched=0
-      while IFS= read -r rel; do
-        [[ -z "$rel" ]] && continue
-        if [[ "$rel" == ${~pattern} ]]; then
-          matched=1
-          INCLUDED_THIS[$rel]=1
-        fi
-      done < "$repo_files_file"
-      [[ "$matched" -eq 1 ]] || err "invalid include path/glob '${pattern}' in bundle_id '${id}'"
-    done < <(jq -r '.[]' <<<"${INCLUDE_JSON_BY_ID[$id]}")
+    PRODUCED_THIS=()
 
-    while IFS= read -r pattern; do
-      [[ -z "$pattern" ]] && continue
-      for rel in ${(k)INCLUDED_THIS}; do
-        [[ "$rel" == ${~pattern} ]] && unset INCLUDED_THIS[$rel]
+    local manifest_json="${MANIFEST_JSON_BY_ID[$id]}"
+    local module_index=0
+    while IFS= read -r module; do
+      [[ -n "$module" ]] || continue
+      module_index=$(( module_index + 1 ))
+      local module_id
+      module_id="$(jq -r '.id' <<<"$module")"
+
+      while IFS= read -r contract_ref; do
+        [[ -n "$contract_ref" ]] || continue
+        local contract_rel contract_abs contract_json
+        contract_rel="$(normalize_static_local_ref "$contract_ref" "bundle '${id}' module '${module_id}' contract ref")"
+        contract_abs="${repo_root}/${contract_rel}"
+        [[ -f "$contract_abs" ]] || err "bundle '${id}' module '${module_id}': contract file not found (${contract_ref})"
+        contract_json="$(read_contract_declarations_json "$contract_abs" "$contract_rel")"
+
+        while IFS= read -r asset_ref; do
+          [[ -n "$asset_ref" ]] || continue
+          local asset_rel asset_abs
+          asset_rel="$(normalize_static_local_ref "$asset_ref" "bundle '${id}' module '${module_id}' asset ref from ${contract_rel}")"
+          asset_abs="${repo_root}/${asset_rel}"
+          [[ -e "$asset_abs" ]] || err "bundle '${id}' module '${module_id}': asset ref not found (${asset_ref})"
+          if [[ -d "$asset_abs" ]]; then
+            local has_files=0
+            while IFS= read -r file_rel; do
+              [[ -n "$file_rel" ]] || continue
+              has_files=1
+              INCLUDED_THIS[$file_rel]=1
+            done < <(find "$asset_abs" -type f ! -path "*/.git/*" | sed "s#^${repo_root}/##" | LC_ALL=C sort)
+            [[ "$has_files" -eq 1 ]] || err "bundle '${id}' module '${module_id}': asset dir has no files (${asset_ref})"
+          else
+            INCLUDED_THIS[$asset_rel]=1
+          fi
+        done < <(jq -r '.assets // [] | .[]? | .ref // empty' <<<"$contract_json")
+
+        while IFS= read -r artifact_ref; do
+          [[ -n "$artifact_ref" ]] || continue
+          local artifact_rel
+          artifact_rel="$(normalize_static_local_ref "$artifact_ref" "bundle '${id}' module '${module_id}' artifact ref from ${contract_rel}")"
+          PRODUCED_THIS[$artifact_rel]=1
+        done < <(jq -r '.artifacts // [] | .[]? | .ref // empty' <<<"$contract_json")
+      done < <(jq -r '.contracts[]' <<<"$module")
+    done < <(jq -c '.domains[]?.modules[]?' <<<"$manifest_json")
+
+    for rel in ${(k)INCLUDED_THIS}; do
+      for produced_rel in ${(k)PRODUCED_THIS}; do
+        if [[ "$rel" == "$produced_rel" || "$rel" == ${produced_rel}/* ]]; then
+          err "bundle '${id}': produced artifact path cannot be included in source payload (${produced_rel})"
+        fi
       done
-    done < <(jq -r '.[]' <<<"${EXCLUDE_JSON_BY_ID[$id]}")
+    done
+
+    [[ "${#INCLUDED_THIS[@]}" -gt 0 ]] || err "bundle '${id}': no source files resolved from contract assets declarations"
 
     for rel in ${(k)INCLUDED_THIS}; do
       local file_sha

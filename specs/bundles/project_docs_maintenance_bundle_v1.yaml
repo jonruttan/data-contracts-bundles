@@ -9,17 +9,19 @@ domains:
   - id: docs
     modules:
       - id: project_docs_maintenance
-        include_paths:
-          - specs/packs/project_docs_maintenance_pack_v1.yaml
-          - specs/contract/10_docs_quality.md
-          - specs/contract/22_docs_information_architecture.md
-          - specs/schema/docs_schema_v1.md
-          - specs/schema/docs_layout_profile_v1.yaml
+        contracts:
+          - specs/contracts/bundle_declarations/project_docs_maintenance_bundle_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
         artifacts:
           - path: /.artifacts/governance-summary.json
             kind: report
           - path: /.artifacts/governance-optional-summary.md
             kind: report
-        contracts:
-          - /specs/02_contracts/10_docs_quality.md
-          - /specs/02_contracts/22_docs_information_architecture.md
+applies_to_runners:
+  - rust
+  - python
+  - php

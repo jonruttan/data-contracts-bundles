@@ -10,11 +10,13 @@ domains:
   - id: bundle_tooling
     modules:
       - id: data_contracts_library_bundle_tooling
-        include_paths:
-          - payloads/data-contracts-library/bundle_tooling/**
         contracts:
-          - /specs/02_contracts/33_bundle_package_management.md
-          - /specs/02_contracts/34_runner_implementation_spec_bundles.md
+          - specs/contracts/bundle_declarations/data_contracts_library_bundle_tooling_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
         artifacts:
           - path: payloads/data-contracts-library/bundle_tooling/specs/01_schema
             kind: dir

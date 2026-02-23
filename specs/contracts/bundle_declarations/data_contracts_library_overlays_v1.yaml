@@ -1,0 +1,8 @@
+assets:
+  - id: asset.bundle.data_contracts_library_overlays
+    ref: payloads/data-contracts-library/overlays
+    type: dir
+artifacts:
+  - id: artifact.bundle.data_contracts_library_overlays.reports
+    ref: .artifacts
+    type: dir

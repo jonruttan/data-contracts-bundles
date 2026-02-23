@@ -9,15 +9,13 @@ domains:
   - id: source
     modules:
       - id: spec_core_maintenance
-        include_paths:
-          - specs/packs/spec_core_maintenance_pack_v1.yaml
-          - specs/contract/02_case_shape.md
-          - specs/contract/04_harness.md
-          - specs/contract/28_spec_lang_policy_execution.md
-          - specs/schema/schema_v1.md
-          - specs/schema/schema_v1.md
-          - specs/schema/schema_catalog_v1.yaml
-          - specs/schema/schema_catalog_v2.yaml
+        contracts:
+          - specs/contracts/bundle_declarations/spec_core_maintenance_bundle_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
         artifacts:
           - path: /.artifacts/governance-catalog-validate.json
             kind: report
@@ -25,7 +23,7 @@ domains:
             kind: report
           - path: /.artifacts/governance-summary.json
             kind: report
-        contracts:
-          - /specs/02_contracts/02_case_shape.md
-          - /specs/02_contracts/04_harness.md
-          - /specs/02_contracts/28_spec_lang_policy_execution.md
+applies_to_runners:
+  - rust
+  - python
+  - php

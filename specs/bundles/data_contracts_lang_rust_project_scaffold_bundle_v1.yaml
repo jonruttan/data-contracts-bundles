@@ -10,12 +10,13 @@ domains:
   - id: scaffold
     modules:
       - id: data_contracts_lang_rust_project_scaffold
-        include_paths:
-          - payloads/data-contracts-lang-rust-project-scaffold/scaffold/**
         contracts:
-          - /specs/02_contracts/29_runner_cli_interface.md
-          - /specs/02_contracts/33_bundle_package_management.md
-          - /specs/02_contracts/34_runner_implementation_spec_bundles.md
+          - specs/contracts/bundle_declarations/data_contracts_lang_rust_project_scaffold_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
         artifacts:
           - path: scaffold/scaffold_manifest_v1.yaml
             kind: manifest

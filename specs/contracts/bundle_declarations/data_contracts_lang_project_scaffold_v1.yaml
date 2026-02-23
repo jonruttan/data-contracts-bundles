@@ -1,0 +1,8 @@
+assets:
+  - id: asset.bundle.data_contracts_lang_project_scaffold
+    ref: payloads/data-contracts-lang-project-scaffold/scaffold
+    type: dir
+artifacts:
+  - id: artifact.bundle.data_contracts_lang_project_scaffold.reports
+    ref: .artifacts
+    type: dir

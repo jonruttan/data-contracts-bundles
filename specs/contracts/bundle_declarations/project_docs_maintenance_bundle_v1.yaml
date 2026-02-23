@@ -1,0 +1,8 @@
+assets:
+  - id: asset.bundle.project_docs_maintenance
+    ref: payloads/data-contracts-library/core/specs/02_contracts
+    type: dir
+artifacts:
+  - id: artifact.bundle.project_docs_maintenance.reports
+    ref: .artifacts
+    type: dir

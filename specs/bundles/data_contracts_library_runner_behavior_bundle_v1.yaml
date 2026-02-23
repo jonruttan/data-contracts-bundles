@@ -10,11 +10,13 @@ domains:
   - id: runner_behavior
     modules:
       - id: data_contracts_library_runner_behavior
-        include_paths:
-          - payloads/data-contracts-library/runner_behavior/**
         contracts:
-          - /specs/02_contracts/12_runner_interface.md
-          - /specs/02_contracts/34_runner_implementation_spec_bundles.md
+          - specs/contracts/bundle_declarations/data_contracts_library_runner_behavior_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
         artifacts:
           - path: payloads/data-contracts-library/runner_behavior/specs/07_runner_behavior/impl
             kind: dir
