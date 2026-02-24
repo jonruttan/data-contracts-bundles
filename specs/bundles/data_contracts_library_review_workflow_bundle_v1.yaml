@@ -1,0 +1,34 @@
+bundle_id: data-contracts-library-review-workflow
+bundle_version: 1.0.0
+summary: Canonical review workflow bundle including decoupled prompts and templates.
+maintainers:
+  - name: data-contracts maintainers
+dependency_mode: required
+depends_on:
+  - data-contracts-library-core
+applies_to_runners:
+  - rust
+  - python
+  - php
+domains:
+  - id: review_workflow
+    modules:
+      - id: data_contracts_library_review_workflow
+        contracts:
+          - specs/contracts/bundle_declarations/data_contracts_library_review_workflow_v1.yaml
+        resource_kinds:
+          - asset
+        selection_policy:
+          refs: static_local_only
+          artifacts: exclude_produced
+        artifacts:
+          - path: payloads/data-contracts-library/review/specs/07_runner_behavior/review_workflow/prompts
+            kind: dir
+          - path: payloads/data-contracts-library/review/specs/07_runner_behavior/review_workflow/templates
+            kind: dir
+          - path: payloads/data-contracts-library/review/specs/07_runner_behavior/review_workflow/endpoints
+            kind: dir
+          - path: payloads/data-contracts-library/review/specs/07_runner_behavior/review_workflow/review_variables.schema.md
+            kind: file
+          - path: payloads/data-contracts-library/review/specs/07_runner_behavior/review_workflow/index.md
+            kind: file
