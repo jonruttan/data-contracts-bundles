@@ -9,6 +9,9 @@ set +x +v
 ROOT_DIR="$(cd "$(dirname "${0}")/.." && pwd)"
 BUNDLE_LOCK_FILENAME="resolved_bundle_lock_v1.yaml"
 FILES_MANIFEST_FILENAME="resolved_files.sha256"
+BOOTSTRAP_MARKER_FILE=".bundler/bootstrap.state.json"
+BOOTSTRAP_BUNDLE_ID="data-contracts-bundler"
+DEFAULT_OUTDATE_FORMAT="text"
 
 source "${ROOT_DIR}/scripts/lib/yaml_to_json.sh"
 
@@ -18,12 +21,26 @@ Usage:
   scripts/bundle resolve --runner <runner> --root <bundle_id> --out <dir> [--repo-root <dir>] [--source-repo <value>] [--source-ref <value>] [--source-commit <sha>]
   scripts/bundle package --runner <runner> --root <bundle_id> --version <bundle_version> --out <dir> [--repo-root <dir>] [--source-repo <value>] [--source-ref <value>] [--source-commit <sha>]
   scripts/bundle package-check --package <path> --sha256 <path>
+  scripts/bundle list [--json]
+  scripts/bundle info --bundle-id <bundle_id> [--json]
+  scripts/bundle install --project-lock <path> --out <dir>
+  scripts/bundle install-check --project-lock <path> --out <dir>
+  scripts/bundle bootstrap --lock <path> --out <dir> [--force-bootstrap]
+  scripts/bundle bootstrap-check --state <path>
+  scripts/bundle outdated --project-lock <path> [--format text|json]
+  scripts/bundle upgrade --project-lock <path> [--bundle-id <id>...] [--to <version|latest>] [--out <path|stdout>] [--dry-run|--write-lock] [--allow-major]
 USAGE
 }
 
 err() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+require_commands() {
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || err "${cmd} is required"
+  done
 }
 
 sha256_file() {
@@ -59,6 +76,17 @@ normalize_static_local_ref() {
   echo "$rel"
 }
 
+normalize_relative_ref() {
+  local path_value="$1"
+  local context="$2"
+  path_value="${path_value#/}"
+  path_value="${path_value#./}"
+  path_value="${path_value%/}"
+  [[ -n "$path_value" ]] || err "${context}: path cannot be empty"
+  [[ "$path_value" != *'..'* ]] || err "${context}: path must not contain '..' segments"
+  echo "$path_value"
+}
+
 read_contract_declarations_json() {
   local abs_path="$1"
   local rel_path="$2"
@@ -66,6 +94,742 @@ read_contract_declarations_json() {
   json="$(parse_yaml_file_to_json "$abs_path")" || err "failed parsing contract declaration: ${rel_path}"
   jq -e 'type=="object"' <<<"$json" >/dev/null || err "contract declaration must parse as object: ${rel_path}"
   echo "$json"
+}
+
+read_bundle_index_json() {
+  local path="$1"
+  parse_yaml_file_to_json "$path" || err "failed to parse lock YAML: $path"
+}
+
+version_normalize() {
+  local version="$1"
+  version="${version#v}"
+  version="${version%%[^0-9.]*}"
+  local major="${version%%.*}"
+  local minor="${version#*.}"
+  [[ "$minor" == "$version" ]] && minor="0"
+  local patch="${minor#*.}"
+  [[ "$patch" == "$minor" ]] && patch="0"
+  [[ -z "$major" ]] && major="0"
+  [[ -z "$minor" ]] && minor="0"
+  [[ -z "$patch" ]] && patch="0"
+  major="${major%%.*}"
+  minor="${minor%%.*}"
+  patch="${patch%%.*}"
+  major="${major#0#}"
+  minor="${minor#0#}"
+  patch="${patch#0#}"
+  echo "${major:-0}.${minor:-0}.${patch:-0}"
+}
+
+version_major() {
+  local version="$1"
+  local norm
+  norm="$(version_normalize "$version")"
+  echo "${norm%%.*}"
+}
+
+version_compare() {
+  local left="$1"
+  local right="$2"
+  local lnorm rnorm
+  lnorm="$(version_normalize "$left")"
+  rnorm="$(version_normalize "$right")"
+
+  local lmajor lminor lpatch rmajor rminor rpatch
+  lmajor="${lnorm%%.*}"
+  lminor="${lnorm#*.}"; lminor="${lminor%%.*}"
+  lpatch="${lnorm#*.*.}"
+  rmajor="${rnorm%%.*}"
+  rminor="${rnorm#*.}"; rminor="${rminor%%.*}"
+  rpatch="${rnorm#*.*.}"
+
+  if (( lmajor > rmajor )); then
+    echo 1
+  elif (( lmajor < rmajor )); then
+    echo -1
+  elif (( lminor > rminor )); then
+    echo 1
+  elif (( lminor < rminor )); then
+    echo -1
+  elif (( lpatch > rpatch )); then
+    echo 1
+  elif (( lpatch < rpatch )); then
+    echo -1
+  else
+    echo 0
+  fi
+}
+
+version_replace() {
+  local value="$1"
+  local old="$2"
+  local new="$3"
+  if [[ "$value" == *"-v${old}.tar.gz" ]]; then
+    echo "${value/-v${old}.tar.gz/-v${new}.tar.gz}"
+    return 0
+  fi
+  if [[ "$value" == *.tar.gz ]]; then
+    local basename
+    basename="${value##*/}"
+    if [[ "$basename" == *-v*.tar.gz ]]; then
+      local replaced
+      replaced="$(printf '%s' "$basename" | sed -E "s/-v[^/]*\\.tar\\.gz$/-v${new}.tar.gz/")"
+      if [[ "$value" == */* ]]; then
+        echo "${value%/*}/${replaced}"
+      else
+        echo "${replaced}"
+      fi
+      return 0
+    fi
+  fi
+  err "unable to replace bundle version in asset URL '${value}'"
+}
+
+load_bundle_manifest_index() {
+  local manifest_path=""
+  typeset -gA BUNDLE_MANIFEST_PATH
+  BUNDLE_MANIFEST_PATH=()
+
+  local manifest_json bundle_id
+  while IFS= read -r manifest_path; do
+    manifest_json="$(read_contract_declarations_json "$manifest_path" "$manifest_path")"
+    bundle_id="$(jq -r '.bundle_id // empty' <<<"$manifest_json")"
+    [[ -n "$bundle_id" ]] || continue
+    BUNDLE_MANIFEST_PATH[$bundle_id]="$manifest_path"
+  done < <(find "${ROOT_DIR}/specs/bundles" -type f -name '*.yaml' | LC_ALL=C sort)
+}
+
+get_bundle_manifest() {
+  local bundle_id="$1"
+  [[ -n "$bundle_id" ]] || err "bundle id is required"
+  load_bundle_manifest_index
+  local path="${BUNDLE_MANIFEST_PATH[$bundle_id]-}"
+  [[ -n "${path-}" ]] || err "bundle manifest not found for ${bundle_id}"
+  read_contract_declarations_json "$path" "$path"
+}
+
+bundle_manifest_version() {
+  local bundle_id="$1"
+  local manifest_json
+  manifest_json="$(get_bundle_manifest "$bundle_id")"
+  jq -r '.bundle_version // empty' <<<"$manifest_json"
+}
+
+normalize_install_dir() {
+  local value="$1"
+  value="${value%/}"
+  value="${value#./}"
+  value="${value##*( )}"
+  [[ -n "$value" ]] || err "install_dir must be non-empty"
+  [[ "$value" != /* ]] || err "install_dir must be repository-relative (no leading slash): ${value}"
+  [[ "$value" != *".."* ]] || err "install_dir must not contain parent segments: ${value}"
+  echo "$value"
+}
+
+read_project_lock() {
+  local lock_path="$1"
+  local lock_json
+  [[ -f "$lock_path" ]] || err "--project-lock path not found: ${lock_path}"
+  lock_json="$(read_bundle_index_json "$lock_path")"
+  jq -e '.version == 1 and .project_id | strings and .bundles | type=="array" and (length > 0)' <<<"$lock_json" >/dev/null \
+    || err "invalid project lock shape: ${lock_path}"
+  jq -e '(.bundles[] | (type=="object" and .bundle_id | strings and .bundle_version | strings and .source | type=="object" and .source.repo | strings and .source.release_tag | strings and .source.asset_url | strings and .source.sha256 | strings and .install_dir | strings))' <<<"$lock_json" >/dev/null \
+    || err "invalid bundle lock entries in ${lock_path}"
+  echo "$lock_json"
+}
+
+read_bootstrap_lock() {
+  local lock_path="$1"
+  [[ -f "$lock_path" ]] || err "--lock path not found: ${lock_path}"
+  local lock_json
+  lock_json="$(read_bundle_index_json "$lock_path")"
+  jq -e '.version == 1 and (.bundles|type=="array" and length==1) and (.[].bundle_id|strings)' <<<"$lock_json" >/dev/null \
+    || err "bootstrap lock must contain exactly one bundle entry: ${lock_path}"
+  local bundle_id
+  bundle_id="$(jq -r '.bundles[0].bundle_id // empty' <<<"$lock_json")"
+  [[ "$bundle_id" == "$BOOTSTRAP_BUNDLE_ID" ]] || err "bootstrap lock must target ${BOOTSTRAP_BUNDLE_ID} (got ${bundle_id})"
+  echo "$lock_json"
+}
+
+lock_bundle_entries() {
+  local lock_json="$1"
+  jq -r '.bundles[] | [.bundle_id,.bundle_version,.source.repo,.source.release_tag,.source.asset_url,.source.sha256,.install_dir] | @tsv' <<<"$lock_json"
+}
+
+check_install_dir_overlaps() {
+  local out_dir="$1"
+  local -a normalized=()
+  local entry path
+  local all_lines="$2"
+
+  while IFS=$'\t' read -r bundle_id bundle_version source_repo source_release source_asset source_sha install_dir; do
+    path="$(normalize_install_dir "$install_dir")"
+    normalized+=( "${path#./}" )
+  done <<<"$all_lines"
+
+  local count="${#normalized[@]}"
+  local idx=1
+  while (( idx <= count )); do
+    local a="${normalized[$idx]}"
+    (( idx += 1 ))
+    local jdx=$idx
+    while (( jdx <= count )); do
+      local b="${normalized[$jdx]}"
+      (( jdx += 1 ))
+      [[ "$a" == "$b" ]] && err "install_dir overlap: duplicate dir '${a}'"
+      [[ "$a" == "${b}/"* ]] && err "install_dir overlap: '${a}' is inside '${b}'"
+      [[ "$b" == "${a}/"* ]] && err "install_dir overlap: '${b}' is inside '${a}'"
+    done
+  done
+}
+
+download_bundle_package() {
+  local asset_url="$1"
+  local out_path="$2"
+  local lock_root="$3"
+
+  local source_file=""
+  if [[ "$asset_url" == file://* ]]; then
+    source_file="${asset_url#file://}"
+  elif [[ "$asset_url" == http://* || "$asset_url" == https://* ]]; then
+    require_commands curl
+    if ! curl -fsSL "$asset_url" -o "$out_path"; then
+      err "failed to download asset from ${asset_url}"
+    fi
+    return 0
+  elif [[ -f "$asset_url" ]]; then
+    source_file="$asset_url"
+  else
+    source_file="${lock_root}/${asset_url}"
+    if [[ ! -f "$source_file" ]]; then
+      err "asset not found: ${asset_url}"
+    fi
+  fi
+
+  cp "$source_file" "$out_path"
+}
+
+checksum_from_sidecar() {
+  local asset_url="$1"
+  local checksum_url checksum_file checksum_value lock_root="$2"
+  if [[ "$asset_url" == file://* ]]; then
+    checksum_url="${asset_url}.sha256"
+  else
+    checksum_url="${asset_url}.sha256"
+  fi
+
+  if [[ "$checksum_url" == file://* ]]; then
+    checksum_file="${checksum_url#file://}"
+    [[ -f "$checksum_file" ]] || err "checksum file not found: ${checksum_file}"
+  elif [[ "$checksum_url" == http://* || "$checksum_url" == https://* ]]; then
+    require_commands curl
+    checksum_file="$(mktemp)"
+    if ! curl -fsSL "$checksum_url" -o "$checksum_file"; then
+      rm -f "$checksum_file"
+      err "checksum sidecar not found: ${checksum_url}"
+    fi
+  elif [[ -f "$checksum_url" ]]; then
+    checksum_file="$checksum_url"
+  elif [[ -f "${lock_root}/${checksum_url}" ]]; then
+    checksum_file="${lock_root}/${checksum_url}"
+  else
+    checksum_file=""
+  fi
+
+  [[ -n "$checksum_file" ]] || err "checksum sidecar not found: ${checksum_url}"
+  checksum_value="$(awk '{print $1; exit}' "$checksum_file")"
+  [[ -n "$checksum_value" ]] || err "checksum sidecar is empty: ${checksum_url}"
+  echo "$checksum_value"
+}
+
+install_bundle_payload() {
+  local root_bundle="$1"
+  local bundle_version="$2"
+  local bundle_asset_url="$3"
+  local bundle_sha="$4"
+  local install_dir="$5"
+  local lock_root="$6"
+
+  require_commands tar
+
+  local tmp_pkg
+  tmp_pkg="$(mktemp)"
+  download_bundle_package "$bundle_asset_url" "$tmp_pkg" "$lock_root"
+  local actual_sha
+  actual_sha="$(sha256_file "$tmp_pkg")"
+  [[ "$actual_sha" == "$bundle_sha" ]] || {
+    rm -f "$tmp_pkg"
+    err "checksum mismatch for ${root_bundle}: expected ${bundle_sha}, got ${actual_sha}"
+  }
+
+  rm -rf "$install_dir"
+  mkdir -p "$install_dir"
+  tar -xzf "$tmp_pkg" -C "$install_dir"
+  rm -f "$tmp_pkg"
+
+  local resolved_lock_path="${install_dir}/${BUNDLE_LOCK_FILENAME}"
+  local manifest_path="${install_dir}/${FILES_MANIFEST_FILENAME}"
+  [[ -f "$resolved_lock_path" ]] || err "resolved_bundle_lock_v1.yaml not found after install for ${root_bundle} at ${install_dir}"
+  [[ -f "$manifest_path" ]] || err "resolved_files.sha256 not found after install for ${root_bundle} at ${install_dir}"
+
+  echo "installed ${root_bundle} (${bundle_version}) -> ${install_dir}"
+}
+
+validate_installation_payload() {
+  local install_dir="$1"
+
+  local resolved_lock_path="${install_dir}/${BUNDLE_LOCK_FILENAME}"
+  local manifest_path="${install_dir}/${FILES_MANIFEST_FILENAME}"
+  [[ -f "$resolved_lock_path" ]] || err "missing ${BUNDLE_LOCK_FILENAME} in ${install_dir}"
+  [[ -f "$manifest_path" ]] || err "missing ${FILES_MANIFEST_FILENAME} in ${install_dir}"
+
+  local lock_json
+  lock_json="$(read_bundle_index_json "$resolved_lock_path")"
+  local expected_count
+  expected_count="$(jq -r '.integrity.file_count // 0' <<<"$lock_json")"
+
+  local actual_count=0
+  local expected_sha actual_sha
+  while IFS='  ' read -r expected_sha file_path; do
+    [[ -z "$expected_sha" ]] && continue
+    [[ -z "$file_path" ]] && continue
+    [[ "$file_path" == "#"* ]] && continue
+    local abs_file_path="${install_dir}/${file_path}"
+    [[ -f "$abs_file_path" ]] || err "manifest file missing from installed payload: ${abs_file_path}"
+    actual_sha="$(sha256_file "$abs_file_path")"
+    [[ "$actual_sha" == "$expected_sha" ]] || err "manifest checksum mismatch for ${abs_file_path}: expected ${expected_sha}, got ${actual_sha}"
+    (( actual_count += 1 ))
+  done < "$manifest_path"
+
+  [[ "$expected_count" -eq 0 || "$actual_count" -eq "$expected_count" ]] || err "manifest file count mismatch in ${install_dir}: expected ${expected_count}, got ${actual_count}"
+}
+
+list_cmd() {
+  load_bundle_manifest_index
+  local json_output=0
+  local output_flag=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json_output=1; shift ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+
+  local bundle_id sorted_ids=()
+  local manifest_path
+  sorted_ids=("${(@k)BUNDLE_MANIFEST_PATH}")
+  sorted_ids=("${(on)sorted_ids}")
+
+  if [[ "$json_output" -eq 1 ]]; then
+    local items=()
+    local manifest_json bundle_json
+    for bundle_id in "${sorted_ids[@]}"; do
+      [[ -n "$bundle_id" ]] || continue
+      manifest_path="${BUNDLE_MANIFEST_PATH[$bundle_id]-}"
+      [[ -n "$manifest_path" ]] || continue
+      manifest_path="${ROOT_DIR}/${manifest_path}"
+      manifest_json="$(read_contract_declarations_json "$manifest_path" "$manifest_path")"
+      bundle_json="$(jq -c --arg manifest_path "$manifest_path" '{bundle_id: .bundle_id, bundle_version: .bundle_version, summary: .summary, dependency_mode: .dependency_mode, depends_on: (.depends_on // []), applies_to_runners: (.applies_to_runners // []), manifest_path: $manifest_path}' <<<"$manifest_json")"
+      items+=("$bundle_json")
+    done
+    printf '%s\n' "${items[@]}" | jq -s '.'
+    return 0
+  fi
+
+  printf '%-48s %-12s %-8s %s\n' "BUNDLE_ID" "VERSION" "RUNTIME" "SUMMARY"
+  printf '%-48s %-12s %-8s %s\n' "---------" "-------" "-------" "-------"
+  for bundle_id in "${sorted_ids[@]}"; do
+    [[ -n "$bundle_id" ]] || continue
+    manifest_path="${BUNDLE_MANIFEST_PATH[$bundle_id]-}"
+    [[ -n "$manifest_path" ]] || continue
+    manifest_path="${ROOT_DIR}/${manifest_path}"
+    manifest_json="$(read_contract_declarations_json "$manifest_path" "$manifest_path")"
+    local version summary dependency_mode
+    version="$(jq -r '.bundle_version // ""' <<<"$manifest_json")"
+    summary="$(jq -r '.summary // ""' <<<"$manifest_json")"
+    dependency_mode="$(jq -r '.dependency_mode // "required"' <<<"$manifest_json")"
+    printf '%-48s %-12s %-8s %s\n' "$bundle_id" "$version" "$dependency_mode" "$summary"
+  done
+}
+
+info_cmd() {
+  local bundle_id=""
+  local json_output=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bundle-id) bundle_id="$2"; shift 2 ;;
+      --json) json_output=1; shift ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$bundle_id" ]] || err "--bundle-id is required"
+
+  local manifest_json
+  manifest_json="$(get_bundle_manifest "$bundle_id")"
+  local version summary dependency_mode depends_on applies_to_runners
+  version="$(jq -r '.bundle_version // "unknown"' <<<"$manifest_json")"
+  summary="$(jq -r '.summary // ""' <<<"$manifest_json")"
+  dependency_mode="$(jq -r '.dependency_mode // "required"' <<<"$manifest_json")"
+  depends_on="$(jq -c '.depends_on // []' <<<"$manifest_json")"
+  applies_to_runners="$(jq -c '.applies_to_runners // []' <<<"$manifest_json")"
+
+  if [[ "$json_output" -eq 1 ]]; then
+    jq -n --arg id "$bundle_id" --arg version "$version" --arg summary "$summary" --arg mode "$dependency_mode" \
+      --argjson depends "$depends_on" --argjson runners "$applies_to_runners" \
+      '{bundle_id: $id, bundle_version: $version, summary: $summary, dependency_mode: $mode, depends_on: $depends, applies_to_runners: $runners}'
+    return 0
+  fi
+
+  echo "bundle_id: ${bundle_id}"
+  echo "bundle_version: ${version}"
+  echo "summary: ${summary}"
+  echo "dependency_mode: ${dependency_mode}"
+  echo "depends_on: ${depends_on}"
+  echo "applies_to_runners: ${applies_to_runners}"
+}
+
+install_cmd() {
+  local project_lock=""
+  local out_dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project-lock) project_lock="$2"; shift 2 ;;
+      --out) out_dir="$2"; shift 2 ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$project_lock" ]] || err "--project-lock is required"
+  [[ -n "$out_dir" ]] || err "--out is required"
+  require_commands find jq
+
+  local lock_root
+  lock_root="$(cd "$(dirname "$project_lock")" && pwd)"
+  local lock_json="$(read_project_lock "$project_lock")"
+  local entries
+  entries="$(lock_bundle_entries "$lock_json")"
+  check_install_dir_overlaps "$out_dir" "$entries"
+  local lock_out_path=""
+  local root_bundle bundle_version source_repo source_release source_asset source_sha install_dir
+
+  while IFS=$'\t' read -r root_bundle bundle_version source_repo source_release source_asset source_sha install_dir; do
+    local target_dir
+    install_dir="$(normalize_install_dir "$install_dir")"
+    target_dir="${out_dir}/${install_dir}"
+    install_bundle_payload "$root_bundle" "$bundle_version" "$source_asset" "$source_sha" "$target_dir" "$lock_root"
+    validate_installation_payload "$target_dir"
+  done <<<"$entries"
+
+  echo "OK: install completed for project lock ${project_lock}"
+}
+
+install_check_cmd() {
+  local project_lock=""
+  local out_dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project-lock) project_lock="$2"; shift 2 ;;
+      --out) out_dir="$2"; shift 2 ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$project_lock" ]] || err "--project-lock is required"
+  [[ -n "$out_dir" ]] || err "--out is required"
+  require_commands jq
+
+  local lock_json="$(read_project_lock "$project_lock")"
+  local entries
+  entries="$(lock_bundle_entries "$lock_json")"
+  check_install_dir_overlaps "$out_dir" "$entries"
+
+  local root_bundle bundle_version source_asset source_sha install_dir
+  while IFS=$'\t' read -r root_bundle bundle_version source_repo source_release source_asset source_sha install_dir; do
+    local target_dir
+    install_dir="$(normalize_install_dir "$install_dir")"
+    target_dir="${out_dir}/${install_dir}"
+    [[ -d "$target_dir" ]] || err "install dir not found for ${root_bundle}: ${target_dir}"
+    validate_installation_payload "$target_dir"
+  done <<<"$entries"
+
+  echo "OK: install-check passed for project lock ${project_lock}"
+}
+
+bootstrap_cmd() {
+  local lock_path=""
+  local out_dir=""
+  local force_bootstrap=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --lock) lock_path="$2"; shift 2 ;;
+      --out) out_dir="$2"; shift 2 ;;
+      --force-bootstrap) force_bootstrap=1; shift ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$lock_path" ]] || err "--lock is required"
+  [[ -n "$out_dir" ]] || err "--out is required"
+
+  local lock_root
+  lock_root="$(cd "$(dirname "$lock_path")" && pwd)"
+  local lock_json="$(read_bootstrap_lock "$lock_path")"
+  local marker_path="${out_dir}/${BOOTSTRAP_MARKER_FILE}"
+  if [[ -f "$marker_path" && "$force_bootstrap" -eq 0 ]]; then
+    err "bootstrap marker exists at ${marker_path}; use --force-bootstrap to proceed"
+  fi
+
+  local root_bundle bundle_version source_asset source_sha install_dir
+  local root_bundle_row
+  root_bundle_row="$(jq -r '.bundles[0] | [.bundle_id,.bundle_version,.source.repo,.source.release_tag,.source.asset_url,.source.sha256,.install_dir] | @tsv' <<<"$lock_json")"
+  IFS=$'\t' read -r root_bundle bundle_version source_repo source_release source_asset source_sha install_dir <<<"$root_bundle_row"
+  install_dir="${out_dir}/.bundles/${BOOTSTRAP_BUNDLE_ID}"
+  local marker_dir="${install_dir#./}"
+  install_bundle_payload "$root_bundle" "$bundle_version" "$source_asset" "$source_sha" "$install_dir" "$lock_root"
+  validate_installation_payload "$install_dir"
+
+  mkdir -p "$(dirname "$marker_path")"
+  jq -n \
+    --arg bundle_id "$root_bundle" \
+    --arg bundle_version "$bundle_version" \
+    --arg source_url "$source_asset" \
+    --arg sha "$source_sha" \
+    --arg install_dir "$marker_dir" \
+    --arg installed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      version: 1,
+      bundle_id: $bundle_id,
+      bundle_version: $bundle_version,
+      source: {
+        asset_url: $source_url,
+        sha256: $sha
+      },
+      install_dir: $install_dir,
+      installed_at: $installed_at
+    }' > "$marker_path"
+
+  echo "wrote bootstrap marker: ${marker_path}"
+}
+
+bootstrap_check_cmd() {
+  local state_path=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --state) state_path="$2"; shift 2 ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$state_path" ]] || err "--state is required"
+  [[ -f "$state_path" ]] || err "state file not found: ${state_path}"
+
+  local state_json="$state_path"
+  jq -e 'type == "object" and .version == 1 and (.bundle_id | strings) and (.install_dir | strings) and (.source.asset_url | strings) and (.source.sha256 | strings) and (.installed_at | strings)' \
+    < "$state_json" >/dev/null || err "invalid bootstrap state schema in ${state_path}"
+  local bootstrap_bundle
+  bootstrap_bundle="$(jq -r '.bundle_id // empty' < "$state_json")"
+  [[ "$bootstrap_bundle" == "$BOOTSTRAP_BUNDLE_ID" ]] || err "bootstrap state bundle_id must be ${BOOTSTRAP_BUNDLE_ID}"
+  local install_dir
+  install_dir="$(jq -r '.install_dir // empty' < "$state_json")"
+  [[ -n "$install_dir" ]] || err "state file missing install_dir"
+  [[ -d "$install_dir" ]] || err "bootstrapped install_dir missing: ${install_dir}"
+  validate_installation_payload "$install_dir"
+  echo "OK: bootstrap-check passed for ${state_path}"
+}
+
+outdated_cmd() {
+  local project_lock=""
+  local format="$DEFAULT_OUTDATE_FORMAT"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project-lock) project_lock="$2"; shift 2 ;;
+      --format) format="$2"; shift 2 ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$project_lock" ]] || err "--project-lock is required"
+  [[ "$format" == "text" || "$format" == "json" ]] || err "--format must be text or json"
+
+  local lock_json="$(read_project_lock "$project_lock")"
+  local entries
+  entries="$(lock_bundle_entries "$lock_json")"
+
+  local results=()
+  local row
+  local bundle_id current_version available_version compare
+
+  while IFS=$'\t' read -r bundle_id bundle_version source_repo source_release source_asset source_sha install_dir; do
+    available_version="$(bundle_manifest_version "$bundle_id")"
+    compare="$(version_compare "$available_version" "$bundle_version")"
+    local up_to_date="false"
+    [[ "$compare" == "-1" ]] || [[ "$compare" == "0" ]] && up_to_date="true"
+    local row_json
+    row_json="$(jq -nc --arg id "$bundle_id" --arg current "$bundle_version" --arg latest "$available_version" --arg update "$up_to_date" '{bundle_id:$id,current_version:$current,latest_version:$latest,up_to_date:($update=="true")}')"
+    results+=("$row_json")
+  done <<<"$entries"
+
+  if [[ "$format" == "json" ]]; then
+    printf '%s\n' "${results[@]}" | jq -s '.'
+    return 0
+  fi
+
+  printf '%-44s %-15s %-15s %s\n' "BUNDLE_ID" "CURRENT" "LATEST" "UP_TO_DATE"
+  printf '%-44s %-15s %-15s %s\n' "--------- " "-------" "------" "----------"
+  for row in "${results[@]}"; do
+    printf '%-44s %-15s %-15s %s\n' \
+      "$(jq -r '.bundle_id' <<<"$row")" \
+      "$(jq -r '.current_version' <<<"$row")" \
+      "$(jq -r '.latest_version' <<<"$row")" \
+      "$(jq -r '.up_to_date' <<<"$row")"
+  done
+}
+
+upgrade_cmd() {
+  local project_lock=""
+  local out_path=""
+  local to_version="latest"
+  local dry_run=1
+  local write_lock=0
+  local out_is_stdout=0
+  local allow_major=0
+  local -a selected_bundle_ids=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project-lock) project_lock="$2"; shift 2 ;;
+      --out) out_path="$2"; shift 2 ;;
+      --to) to_version="$2"; shift 2 ;;
+      --bundle-id) selected_bundle_ids+=("$2"); shift 2 ;;
+      --dry-run) dry_run=1; write_lock=0; shift ;;
+      --write-lock) write_lock=1; dry_run=0; shift ;;
+      --allow-major) allow_major=1; shift ;;
+      *) err "unknown arg: $1" ;;
+    esac
+  done
+  [[ -n "$project_lock" ]] || err "--project-lock is required"
+  [[ -f "$project_lock" ]] || err "project lock not found: ${project_lock}"
+  [[ "$write_lock" -eq 1 || "$dry_run" -eq 1 ]] || err "either --dry-run or --write-lock is required"
+
+  if [[ "$write_lock" -eq 1 && -z "$out_path" ]]; then
+    out_path="$project_lock"
+  elif [[ "$out_path" == "stdout" ]]; then
+    out_is_stdout=1
+  fi
+
+  local lock_root="$(cd "$(dirname "$project_lock")" && pwd)"
+  local lock_json="$(read_project_lock "$project_lock")"
+  local entries="$(lock_bundle_entries "$lock_json")"
+
+  local bundle_id current_version source_repo source_release source_asset source_sha install_dir
+  local selected_all=0
+  [[ "${#selected_bundle_ids[@]}" -eq 0 ]] && selected_all=1
+
+  local plans=()
+  local plan_out="$lock_json"
+  local target_version available_version compare
+
+  while IFS=$'\t' read -r bundle_id current_version source_repo source_release source_asset source_sha install_dir; do
+    if [[ "$selected_all" -eq 0 ]]; then
+      local matched=0
+      local selected_id
+      for selected_id in "${selected_bundle_ids[@]}"; do
+        [[ "$selected_id" == "$bundle_id" ]] && matched=1
+      done
+      [[ "$matched" -eq 1 ]] || continue
+    fi
+
+    if [[ "$to_version" == "latest" ]]; then
+      target_version="$(bundle_manifest_version "$bundle_id")"
+    else
+      target_version="$to_version"
+    fi
+
+    [[ -n "$target_version" ]] || err "could not determine target version for ${bundle_id}"
+
+    compare="$(version_compare "$target_version" "$current_version")"
+    local major_ok=0
+    if [[ "$allow_major" -eq 1 ]]; then
+      major_ok=1
+    else
+      if [[ "$(version_major "$target_version")" == "$(version_major "$current_version")" ]]; then
+        major_ok=1
+      else
+        major_ok=0
+      fi
+    fi
+    [[ "$major_ok" -eq 1 ]] || err "major version change not allowed for ${bundle_id}: ${current_version} -> ${target_version} (use --allow-major)"
+
+    local changed="false"
+    local new_asset_url="$source_asset"
+    local new_release_tag="$source_release"
+    local new_sha="$source_sha"
+    if [[ "$compare" -eq 1 ]]; then
+      changed="true"
+      if [[ "$source_asset" == *"-v${current_version}"* ]]; then
+        new_asset_url="$(version_replace "$source_asset" "$current_version" "$target_version")"
+      fi
+      if [[ "$source_release" == *"v${current_version}"* ]]; then
+        new_release_tag="${source_release/v${current_version}/v${target_version}}"
+      fi
+      local checksum_url="${new_asset_url}.sha256"
+      new_sha="$(checksum_from_sidecar "$new_asset_url" "$lock_root")"
+    elif [[ "$compare" -eq -1 ]]; then
+      : # downgrades are allowed only by explicit --to
+    fi
+
+      local line_json
+      local plan_filter
+      plan_filter='{bundle_id:$bundle_id,current_version:$current,target_version:$target,needs_update:($update=="true"),selected:true}'
+      line_json="$(jq -nc \
+        --arg bundle_id "$bundle_id" \
+        --arg current "$current_version" \
+        --arg target "$target_version" \
+        --arg update "$changed" \
+        --argjson selected "true" \
+        "$plan_filter")"
+      plans+=("$line_json")
+
+    if [[ "$changed" == "true" ]]; then
+      local safe_version
+      safe_version="$target_version"
+      if [[ -z "$safe_version" ]]; then
+        err "cannot compute upgrade target for ${bundle_id}"
+      fi
+      local upgrade_filter
+      upgrade_filter='(.bundles |= map( if .bundle_id == $bid then .bundle_version = $ver | .source.asset_url = $asset | .source.sha256 = $sha | .source.release_tag = $rel else . end ))'
+      plan_out="$(printf '%s\n' "$plan_out" | jq \
+        --arg bid "$bundle_id" \
+        --arg ver "$safe_version" \
+        --arg asset "$new_asset_url" \
+        --arg sha "$new_sha" \
+        --arg rel "$new_release_tag" \
+        "$upgrade_filter")"
+    fi
+  done <<<"$entries"
+
+  if [[ "${#plans[@]}" -eq 0 ]]; then
+    echo "No upgrades selected."
+  elif [[ "$write_lock" -eq 1 ]]; then
+    printf '%s\n' "${plans[@]}" | jq -s '.'
+    if [[ "$out_is_stdout" -eq 0 && -n "$out_path" ]]; then
+      echo "$plan_out" > "$out_path"
+      echo "wrote upgraded lock: ${out_path}"
+    elif [[ "$out_is_stdout" -eq 1 ]]; then
+      echo "$plan_out"
+    else
+      echo "$plan_out"
+    fi
+  else
+    local plan_json
+    plan_json="$(printf '%s\n' "${plans[@]}" | jq -s '.')"
+    if [[ "$out_is_stdout" -eq 0 && -n "$out_path" ]]; then
+      echo "$plan_json" > "$out_path"
+      echo "wrote upgrade plan: ${out_path}"
+      return 0
+    fi
+    if [[ "$out_is_stdout" -eq 1 ]]; then
+      echo "$plan_json"
+    else
+      printf '%s\n' "${plans[@]}" | jq -s '.'
+    fi
+  fi
 }
 
 resolve_impl() {
@@ -512,5 +1276,13 @@ case "$1" in
   resolve) shift; resolve_cmd "$@" ;;
   package) shift; package_cmd "$@" ;;
   package-check) shift; package_check_cmd "$@" ;;
-  *) usage >&2; exit 2 ;;
+  list) shift; list_cmd "$@" ;;
+  info) shift; info_cmd "$@" ;;
+  install) shift; install_cmd "$@" ;;
+  install-check) shift; install_check_cmd "$@" ;;
+  bootstrap) shift; bootstrap_cmd "$@" ;;
+  bootstrap-check) shift; bootstrap_check_cmd "$@" ;;
+  outdated) shift; outdated_cmd "$@" ;;
+  upgrade) shift; upgrade_cmd "$@" ;;
+  *) err "unsupported command: $1";;
 esac
